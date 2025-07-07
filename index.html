@@ -1,0 +1,728 @@
+<!DOCTYPE html>
+<html lang="en">
+
+<head>
+	<meta charset="UTF-8">
+	<meta name="viewport" content="width=device-width, initial-scale=1.0">
+	<title>Video Annotation Tool</title>
+	<script src="https://cdn.tailwindcss.com"></script>
+	<script src="https://unpkg.com/vue@3/dist/vue.global.js"></script>
+	<style>
+		/* Custom CSS for Inter font and full height setup */
+		html,
+		body {
+			font-family: 'Inter', sans-serif;
+			margin: 0;
+			height: 100%;
+			/* Ensure html and body take full height */
+			overflow-y: scroll;
+			/* Allows scrolling between sections */
+			scroll-behavior: smooth;
+			/* Smooth scroll effect */
+		}
+
+		/* Main application container - flex column to stack sections */
+		#app {
+			display: flex;
+			flex-direction: column;
+			min-height: 100vh;
+			/* Ensures app takes at least full viewport height */
+		}
+
+		/* Common style for the two main sections */
+		.section {
+			min-height: 100vh;
+			/* Each section takes full viewport height */
+			padding: 1.25rem;
+			/* p-5 in Tailwind */
+			box-sizing: border-box;
+			/* Padding included in height */
+			display: flex;
+			/* Use flexbox for internal layout */
+			justify-content: center;
+			/* Center content horizontally */
+			align-items: flex-start;
+			/* Align content to the top */
+		}
+
+		/* Video Wrapper to correctly position crop overlay */
+		#video-wrapper {
+			position: relative;
+			/* Crucial for absolute positioning of crop-overlay */
+			width: 100%;
+			height: auto;
+			display: flex;
+			/* To center the video within */
+			justify-content: center;
+			align-items: center;
+			background-color: #000;
+			/* Black background for letterboxing */
+			border-radius: 0.5rem;
+			/* rounded-lg */
+			overflow: hidden;
+			/* Hide anything that might overflow if video is smaller */
+		}
+
+		#videoPlayer {
+			width: 100%;
+			height: auto;
+			max-height: 85vh;
+			/* Limit vertical size */
+			object-fit: contain;
+			/* Ensure video fits within bounds, adding letterbox/pillarbox */
+			background-color: #000;
+			/* Ensure black bars if object-fit is active */
+		}
+
+		/* Cropping Overlay - positioned over the video element */
+		.crop-overlay {
+			position: absolute;
+			/* These will be set dynamically by Vue to precisely match videoPlayer dimensions/position */
+			background: rgba(0, 0, 0, 0.5);
+			/* Semi-transparent blackout effect */
+			cursor: crosshair;
+			z-index: 10;
+			/* Ensure it's on top of the video */
+		}
+
+		/* The actual selection rectangle drawn by the user */
+		.crop-selection {
+			border: 2px solid #00FFFF;
+			/* Bright cyan border */
+			background: rgba(0, 255, 255, 0.2);
+			/* Semi-transparent cyan fill */
+			position: absolute;
+			/* Positioned within the crop-overlay */
+			box-sizing: border-box;
+			/* Border included in size */
+			border-radius: 0.375rem;
+			/* rounded-md in Tailwind */
+		}
+
+		/* Override default input type number spinner visibility */
+		input[type="number"]::-webkit-outer-spin-button,
+		input[type="number"]::-webkit-inner-spin-button {
+			-webkit-appearance: none;
+			margin: 0;
+		}
+
+		input[type="number"] {
+			-moz-appearance: textfield;
+			/* Firefox */
+		}
+
+		/* Style for clickable labels */
+		.clickable-label {
+			cursor: pointer;
+			text-decoration: underline;
+		}
+
+		.clickable-label:hover {
+			color: #4a5568;
+			/* Tailwind gray-700 */
+		}
+	</style>
+</head>
+
+<body class="bg-gray-50 text-gray-800">
+	<div id="app">
+		<section id="annotation-section" class="section flex-row gap-5">
+			<div id="video-container" class="relative flex flex-col items-center w-2/3 max-w-4xl">
+				<input type="file" id="videoFileInput" accept="video/*" @change="handleVideoFileChange"
+					v-if="!videoSrc"
+					class="mb-4 p-1 border border-gray-300 rounded-md bg-white shadow-sm w-full cursor-pointer">
+
+				<div id="video-wrapper" class="rounded-lg shadow-lg">
+					<video ref="videoPlayer" :src="videoSrc" controls
+						@timeupdate="updateCurrentTime"
+						@loadedmetadata="handleVideoMetadataLoaded"
+						class="w-full h-auto max-h-[85vh] object-contain bg-black">
+						Your browser does not support the video tag.
+					</video>
+
+					<div v-if="isCropping" class="crop-overlay" :style="{
+							top: videoPlayerMetrics.offsetTop + 'px',
+							left: videoPlayerMetrics.offsetLeft + 'px',
+							width: videoPlayerMetrics.offsetWidth + 'px',
+							height: videoPlayerMetrics.offsetHeight + 'px'
+							}" @mousedown="startCrop" @mousemove="handleCropDrag" @mouseup="endCrop" @mouseleave="endCrop">
+						<div class="crop-selection rounded-md" :style="{
+								left: (cropCoordsDisplay.x1_display + videoDisplayMetrics.offsetX) + 'px',
+								top: (cropCoordsDisplay.y1_display + videoDisplayMetrics.offsetY) + 'px',
+								width: (cropCoordsDisplay.x2_display - cropCoordsDisplay.x1_display) + 'px',
+								height: (cropCoordsDisplay.y2_display - cropCoordsDisplay.y1_display) + 'px'
+								}">
+						</div>
+					</div>
+				</div>
+			</div>
+
+			<div id="controls-container"
+				class="flex flex-col gap-4 w-1/3 max-w-md p-4 bg-white rounded-lg shadow-md">
+				<div class="input-group">
+					<button @click="togglePlayPauseMark"
+						class="w-full py-2 text-white rounded-md bg-blue-600 hover:bg-blue-700 focus:ring-blue-500"
+						:disabled="!videoSrc">
+						{{ buttonText }}
+					</button>
+				</div>
+
+				<div class="input-group">
+					<input type="text" id="transcriptionInput" placeholder="Transcription"
+						v-model="transcription" ref="transcriptionInput"
+						@blur="handleTranscriptionBlur"
+						class="w-full p-1 border border-gray-300 rounded-md focus:ring-blue-500 focus:border-blue-500">
+				</div>
+
+				<div class="input-group p-4 bg-gray-100 rounded-lg shadow-inner">
+					<label class="block mb-2 font-semibold text-gray-700">Times:</label>
+					<div class="grid grid-cols-3 gap-1 mb-2">
+						<div class="col-span-1">
+							<label for="startTimeManual"
+								class="text-sm text-gray-600 clickable-label"
+								@click="seekToTime(manualTimes.start)">Start:</label>
+							<input type="number" id="startTimeManual" step="0.001"
+								v-model="manualTimes.start"
+								class="w-full p-1 border border-gray-300 rounded-md focus:ring-blue-500 focus:border-blue-500">
+						</div>
+						<div class="col-span-1">
+							<label for="endTimeManual"
+								class="text-sm text-gray-600 clickable-label"
+								@click="seekToTime(manualTimes.end)">End:</label>
+							<input type="number" id="endTimeManual" step="0.001"
+								v-model="manualTimes.end"
+								class="w-full p-1 border border-gray-300 rounded-md focus:ring-blue-500 focus:border-blue-500">
+						</div>
+						<div class="col-span-1">
+							<label for="cropTimestampManual"
+								class="text-sm text-gray-600 clickable-label"
+								@click="seekToTime(manualTimes.crop)">Crop:</label>
+							<input type="number" id="cropTimestampManual" step="0.001"
+								v-model="manualTimes.crop"
+								class="w-full p-1 border border-gray-300 rounded-md focus:ring-blue-500 focus:border-blue-500">
+						</div>
+					</div>
+					<button @click="playManualSegment"
+						class="w-full py-2 bg-yellow-600 text-white rounded-md hover:bg-yellow-700 focus:outline-none focus:ring-2 focus:ring-yellow-500"
+						:disabled="!videoSrc || manualTimes.start === null || manualTimes.end === null">Play
+						Segment</button>
+				</div>
+
+				<div class="input-group p-4 bg-gray-100 rounded-lg shadow-inner">
+					<label class="block mb-2 font-semibold text-gray-700">Crops Coords:
+						(x1, y1, x2,y2)</label>
+					<div class="grid grid-cols-2 gap-1 mb-2">
+						<div class="col-span-1">
+							<input type="number" id="cropX1" placeholder="X1"
+								v-model="cropCoordsInput.x1"
+								class="w-full p-1 border border-gray-300 rounded-md focus:ring-blue-500 focus:border-blue-500">
+						</div>
+						<div class="col-span-1">
+							<input type="number" id="cropY1" placeholder="Y1"
+								v-model="cropCoordsInput.y1"
+								class="w-full p-1 border border-gray-300 rounded-md focus:ring-blue-500 focus:border-blue-500">
+						</div>
+						<div class="col-span-1">
+							<input type="number" id="cropX2" placeholder="X2"
+								v-model="cropCoordsInput.x2"
+								class="w-full p-1 border border-gray-300 rounded-md focus:ring-blue-500 focus:border-blue-500">
+						</div>
+						<div class="col-span-1">
+							<input type="number" id="cropY2" placeholder="Y2"
+								v-model="cropCoordsInput.y2"
+								class="w-full p-1 border border-gray-300 rounded-md focus:ring-blue-500 focus:border-blue-500">
+						</div>
+					</div>
+					<button @click="cancelCrop"
+						class="w-full py-2 bg-red-600 text-white rounded-md hover:bg-red-700 focus:outline-none focus:ring-2 focus:ring-red-500">Cancel
+						Crop</button>
+				</div>
+
+				<button @click="saveAnnotation"
+					class="w-full py-2 bg-blue-600 text-white rounded-md hover:bg-blue-700 focus:outline-none focus:ring-2 focus:ring-blue-500"
+					:disabled="!transcription || manualTimes.start === null || manualTimes.end === null || manualTimes.crop === null">Save
+					Annotation</button>
+			</div>
+		</section>
+
+		<section id="table-section" class="section flex-col bg-gray-100">
+			<h2 class="text-3xl font-bold text-gray-800 mb-6">Annotated Words</h2>
+			<button @click="exportCsv"
+				class="mb-6 px-6 py-3 bg-green-600 text-white font-semibold rounded-lg shadow-md hover:bg-green-700 focus:outline-none focus:ring-2 focus:ring-green-500"
+				:disabled="annotations.length === 0">Export to CSV</button>
+			<div class="w-full max-w-6xl overflow-x-auto bg-white rounded-lg shadow-lg">
+				<table class="min-w-full divide-y divide-gray-200">
+					<thead class="bg-gray-50">
+						<tr>
+							<th
+								class="px-4 py-2 text-left text-xs font-medium text-gray-500 uppercase tracking-wider rounded-tl-lg">
+								ID</th>
+							<th
+								class="px-4 py-2 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">
+								Video</th>
+							<th
+								class="px-4 py-2 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">
+								Start</th>
+							<th
+								class="px-4 py-2 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">
+								End</th>
+							<th
+								class="px-4 py-2 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">
+								Transcription</th>
+							<th
+								class="px-4 py-2 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">
+								Crop Time</th>
+							<th
+								class="px-4 py-2 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">
+								X1</th>
+							<th
+								class="px-4 py-2 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">
+								Y1</th>
+							<th
+								class="px-4 py-2 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">
+								X2</th>
+							<th
+								class="px-4 py-2 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">
+								Y2</th>
+							<th
+								class="px-4 py-2 text-left text-xs font-medium text-gray-500 uppercase tracking-wider rounded-tr-lg">
+								Actions</th>
+						</tr>
+					</thead>
+					<tbody class="bg-white divide-y divide-gray-200">
+						<tr v-for="annotation in annotations" :key="annotation.id">
+							<td class="px-4 py-2 whitespace-nowrap text-sm text-gray-900">{{
+								annotation.id }}</td>
+							<td class="px-4 py-2 whitespace-nowrap text-sm text-gray-900">{{
+								annotation.videoName }}</td>
+							<td class="px-4 py-2 whitespace-nowrap text-sm text-gray-900">{{
+								annotation.start.toFixed(2) }}</td>
+							<td class="px-4 py-2 whitespace-nowrap text-sm text-gray-900">{{
+								annotation.end.toFixed(2) }}</td>
+							<td class="px-4 py-2 whitespace-nowrap text-sm text-gray-900">{{
+								annotation.transcription }}</td>
+							<td class="px-4 py-2 whitespace-nowrap text-sm text-gray-900">{{
+								annotation.cropTime.toFixed(2) }}</td>
+							<td class="px-4 py-2 whitespace-nowrap text-sm text-gray-900">{{
+								annotation.x1 }}</td>
+							<td class="px-4 py-2 whitespace-nowrap text-sm text-gray-900">{{
+								annotation.y1 }}</td>
+							<td class="px-4 py-2 whitespace-nowrap text-sm text-gray-900">{{
+								annotation.x2 }}</td>
+							<td class="px-4 py-2 whitespace-nowrap text-sm text-gray-900">{{
+								annotation.y2 }}</td>
+							<td
+								class="px-4 py-2 whitespace-nowrap text-sm text-gray-900 table-actions">
+								<button @click="loadAnnotation(annotation)"
+									class="px-3 py-1 bg-purple-600 text-white text-xs rounded-md hover:bg-purple-700 focus:outline-none focus:ring-2 focus:ring-purple-500">Load</button>
+								<button @click="deleteAnnotation(annotation.id)"
+									class="px-3 py-1 bg-red-600 text-white text-xs rounded-md hover:bg-red-700 focus:outline-none focus:ring-2 focus:ring-red-500">Delete</button>
+							</td>
+						</tr>
+						<tr v-if="annotations.length === 0">
+							<td colspan="11"
+								class="px-4 py-4 text-center text-sm text-gray-500">No
+								annotations yet. Load a video and start annotating!</td>
+						</tr>
+					</tbody>
+				</table>
+			</div>
+		</section>
+	</div>
+
+	<script>
+		const app = Vue.createApp({
+			data() {
+				return {
+					videoPlayer: null, // Will hold the DOM element reference
+					videoSrc: '', // No default video loaded initially
+					videoName: 'No Video Loaded',
+					currentTime: 0.000,
+					isPlaying: false, // Track video playback state
+					isSegmentMarkingActive: false, // True if Mark Start has been clicked, waiting for Mark End
+					transcription: '',
+					isCropping: false,
+					isDraggingCrop: false,
+					cropStartCoordsDisplay: {x: 0, y: 0}, // For initial mouse down relative to displayed video
+					// Store coordinates relative to the *displayed video content area* for UI
+					cropCoordsDisplay: {x1_display: 0, y1_display: 0, x2_display: 0, y2_display: 0},
+					// Store coordinates for input fields (will map to/from display coords)
+					cropCoordsInput: {x1: 0, y1: 0, x2: 0, y2: 0},
+					manualTimes: {
+						start: null,
+						end: null,
+						crop: null
+					},
+					annotations: [],
+					currentAnnotationId: 1, // Start IDs from 1
+					playbackTimeout: null, // To stop playSegment playback
+				};
+			},
+			computed: {
+				// Determines the text for the main Play/Mark button
+				buttonText() {
+					if (!this.isPlaying && !this.isSegmentMarkingActive) {
+						return 'Play';
+					} else if (this.isPlaying && !this.isSegmentMarkingActive) {
+						return 'Mark Start'; // Changed from white to indigo
+					} else if (this.isPlaying && this.isSegmentMarkingActive) {
+						return 'Mark End';
+					}
+					// Fallback for paused state after marking
+					return 'Play';
+				},
+				videoDisplayMetrics() {
+					// This computed property calculates the actual dimensions and offsets of the video
+					// content *within* the video player element, accounting for object-fit: contain
+					if (!this.videoPlayer || this.videoPlayer.videoWidth === 0 || this.videoPlayer.videoHeight === 0) {
+						return {
+							width: 0, height: 0,
+							offsetX: 0, offsetY: 0,
+							scaleX: 1, scaleY: 1
+						};
+					}
+
+					const intrinsicWidth = this.videoPlayer.videoWidth;
+					const intrinsicHeight = this.videoPlayer.videoHeight;
+					const playerWidth = this.videoPlayer.offsetWidth;
+					const playerHeight = this.videoPlayer.offsetHeight;
+
+					const videoAspectRatio = intrinsicWidth / intrinsicHeight;
+					const playerAspectRatio = playerWidth / playerHeight;
+
+					let displayVideoWidth, displayVideoHeight, displayVideoOffsetX, displayVideoOffsetY;
+
+					if (videoAspectRatio > playerAspectRatio) {
+						// Video is wider than player, constrained by player width
+						displayVideoWidth = playerWidth;
+						displayVideoHeight = playerWidth / videoAspectRatio;
+						displayVideoOffsetX = 0;
+						displayVideoOffsetY = (playerHeight - displayVideoHeight) / 2;
+					} else {
+						// Video is taller than player, constrained by player height
+						displayVideoHeight = playerHeight;
+						displayVideoWidth = playerHeight * videoAspectRatio;
+						displayVideoOffsetX = (playerWidth - displayVideoWidth) / 2;
+						displayVideoOffsetY = 0;
+					}
+
+					const scaleX = intrinsicWidth / displayVideoWidth;
+					const scaleY = intrinsicHeight / displayVideoHeight;
+
+					return {
+						width: displayVideoWidth,
+						height: displayVideoHeight,
+						offsetX: displayVideoOffsetX,
+						offsetY: displayVideoOffsetY,
+						scaleX: isFinite(scaleX) ? scaleX : 1, // Handle division by zero if display dimensions are 0
+						scaleY: isFinite(scaleY) ? scaleY : 1
+					};
+				},
+				// New computed property to get videoPlayer's position and size relative to its parent
+				videoPlayerMetrics() {
+					if (!this.videoPlayer) {
+						return {offsetTop: 0, offsetLeft: 0, offsetWidth: 0, offsetHeight: 0};
+					}
+					// These are relative to the offsetParent, which is #video-container
+					return {
+						offsetTop: this.videoPlayer.offsetTop,
+						offsetLeft: this.videoPlayer.offsetLeft,
+						offsetWidth: this.videoPlayer.offsetWidth,
+						offsetHeight: this.videoPlayer.offsetHeight
+					};
+				}
+			},
+			mounted() {
+				this.videoPlayer = this.$refs.videoPlayer;
+
+				// Listen for time updates on the video
+				this.videoPlayer.addEventListener('timeupdate', this.updateCurrentTime);
+				// Listen for when video metadata (like dimensions) is loaded
+				this.videoPlayer.addEventListener('loadedmetadata', this.handleVideoMetadataLoaded);
+
+				// Update isPlaying state when video plays/pauses
+				this.videoPlayer.addEventListener('play', () => {this.isPlaying = true;});
+				this.videoPlayer.addEventListener('pause', () => {this.isPlaying = false;});
+				this.videoPlayer.addEventListener('ended', () => {this.isPlaying = false;});
+
+
+				// Initialize crop input fields with values from cropCoordsDisplay reactive props
+				this.$watch('cropCoordsDisplay', (newVal) => {
+					this.cropCoordsInput.x1 = newVal.x1_display;
+					this.cropCoordsInput.y1 = newVal.y1_display;
+					this.cropCoordsInput.x2 = newVal.x2_display;
+					this.cropCoordsInput.y2 = newVal.y2_display;
+				}, {deep: true, immediate: true});
+
+				// Watch for changes in cropCoordsInput and update cropCoordsDisplay
+				this.$watch('cropCoordsInput', (newVal) => {
+					this.cropCoordsDisplay.x1_display = parseFloat(newVal.x1) || 0;
+					this.cropCoordsDisplay.y1_display = parseFloat(newVal.y1) || 0;
+					this.cropCoordsDisplay.x2_display = parseFloat(newVal.x2) || 0;
+					this.cropCoordsDisplay.y2_display = parseFloat(newVal.y2) || 0;
+				}, {deep: true});
+			},
+			methods: {
+				handleVideoFileChange(event) {
+					const file = event.target.files[0];
+					if (file) {
+						// Revoke previous URL if any, to prevent memory leaks
+						if (this.videoSrc && this.videoSrc.startsWith('blob:')) {
+							URL.revokeObjectURL(this.videoSrc);
+						}
+						this.videoSrc = URL.createObjectURL(file);
+						this.videoName = file.name;
+						this.resetCurrentAnnotation(); // Reset controls and state
+						this.videoPlayer.load(); // Reload video to ensure loadedmetadata fires again
+					}
+				},
+				updateCurrentTime() {
+					this.currentTime = this.videoPlayer.currentTime;
+
+					// Stop playback if playing a segment and end time is reached
+					if (this.playbackTimeout && this.manualTimes.end !== null && this.currentTime >= this.manualTimes.end) {
+						this.videoPlayer.pause();
+						clearTimeout(this.playbackTimeout);
+						this.playbackTimeout = null;
+					}
+				},
+				// Unified Play/Mark button logic
+				togglePlayPauseMark() {
+					if (!this.videoPlayer || !this.videoSrc) return;
+
+					if (!this.isPlaying) {
+						// Currently paused, so Play
+						this.videoPlayer.play();
+					} else {
+						// Currently playing
+						if (!this.isSegmentMarkingActive) {
+							// Playing, not marked start yet, so Mark Start
+							this.manualTimes.start = parseFloat(this.currentTime.toFixed(2));
+							this.isSegmentMarkingActive = true;
+							this.videoPlayer.pause(); // Pause after marking start
+						} else {
+							// Playing, marked start, so Mark End
+							this.manualTimes.end = parseFloat(this.currentTime.toFixed(2));
+							this.isSegmentMarkingActive = false;
+							this.videoPlayer.pause(); // Pause after marking end
+							this.$nextTick(() => {
+								this.$refs.transcriptionInput.focus(); // Focus transcription input
+							});
+						}
+					}
+				},
+				// New method to activate crop mode, called automatically after transcription blur
+				activateCropMode() {
+					if (!this.videoPlayer || !this.videoSrc || this.manualTimes.start === null || this.manualTimes.end === null) {
+						// Only activate if segment times are set
+						return;
+					}
+					const midpoint = (this.manualTimes.start + this.manualTimes.end) / 2;
+					this.videoPlayer.currentTime = midpoint;
+					this.manualTimes.crop = parseFloat(midpoint.toFixed(2)); // Set crop timestamp to midpoint
+					this.isCropping = true;
+					this.videoPlayer.pause(); // Pause video for cropping
+				},
+				handleTranscriptionBlur() {
+					// Trigger crop activation when transcription input loses focus
+					this.activateCropMode();
+				},
+				// New method to seek video to a specific time
+				seekToTime(time) {
+					if (this.videoPlayer && this.videoSrc && time !== null && !isNaN(time)) {
+						this.videoPlayer.currentTime = parseFloat(time);
+						this.videoPlayer.pause(); // Pause after seeking
+					}
+				},
+				getMouseCoordsInContent(event) {
+					// Get the bounding rect of the video *player* element relative to the viewport
+					const videoRect = this.videoPlayer.getBoundingClientRect();
+					const metrics = this.videoDisplayMetrics;
+
+					// Mouse position relative to the video player element's top-left
+					const mouseXInPlayer = event.clientX - videoRect.left;
+					const mouseYInPlayer = event.clientY - videoRect.top;
+
+					// Mouse position relative to the *displayed video content area*
+					// This is where the offset for letterboxing/pillarboxing comes in
+					let xInContent = mouseXInPlayer - metrics.offsetX;
+					let yInContent = mouseYInPlayer - metrics.offsetY;
+
+					// Constrain coordinates within the displayed video content bounds
+					xInContent = Math.max(0, Math.min(metrics.width, xInContent));
+					yInContent = Math.max(0, Math.min(metrics.height, yInContent));
+
+					return {x: Math.round(xInContent), y: Math.round(yInContent)};
+				},
+				startCrop(event) {
+					if (!this.isCropping || event.button !== 0) return; // Only allow left-click
+					this.isDraggingCrop = true;
+					const {x, y} = this.getMouseCoordsInContent(event);
+					this.cropStartCoordsDisplay = {x, y};
+
+					// Initialize current crop coords to starting point (relative to displayed content)
+					this.cropCoordsDisplay.x1_display = x;
+					this.cropCoordsDisplay.y1_display = y;
+					this.cropCoordsDisplay.x2_display = x;
+					this.cropCoordsDisplay.y2_display = y;
+				},
+				handleCropDrag(event) {
+					if (!this.isDraggingCrop || !this.isCropping) return;
+					const {x, y} = this.getMouseCoordsInContent(event);
+
+					// Update cropCoordsDisplay with the new display coordinates
+					this.cropCoordsDisplay.x1_display = Math.min(this.cropStartCoordsDisplay.x, x);
+					this.cropCoordsDisplay.y1_display = Math.min(this.cropStartCoordsDisplay.y, y);
+					this.cropCoordsDisplay.x2_display = Math.max(this.cropStartCoordsDisplay.x, x);
+					this.cropCoordsDisplay.y2_display = Math.max(this.cropStartCoordsDisplay.y, y);
+				},
+				endCrop() {
+					if (!this.isDraggingCrop) return;
+					this.isDraggingCrop = false;
+					// Ensure valid coordinates for saving (x1 < x2, y1 < y2)
+					if (this.cropCoordsDisplay.x1_display > this.cropCoordsDisplay.x2_display) {
+						[this.cropCoordsDisplay.x1_display, this.cropCoordsDisplay.x2_display] = [this.cropCoordsDisplay.x2_display, this.cropCoordsDisplay.x1_display];
+					}
+					if (this.cropCoordsDisplay.y1_display > this.cropCoordsDisplay.y2_display) {
+						[this.cropCoordsDisplay.y1_display, this.cropCoordsDisplay.y2_display] = [this.cropCoordsDisplay.y2_display, this.cropCoordsDisplay.y1_display];
+					}
+				},
+				saveAnnotation() {
+					if (!this.transcription || !this.videoSrc || this.manualTimes.start === null || this.manualTimes.end === null || this.manualTimes.crop === null) {
+						alert('Please ensure transcription, start/end times, and crop timestamp are set.');
+						return;
+					}
+
+					// Convert display coordinates to intrinsic video pixels for saving
+					const metrics = this.videoDisplayMetrics;
+					const intrinsicX1 = Math.round(this.cropCoordsDisplay.x1_display * metrics.scaleX);
+					const intrinsicY1 = Math.round(this.cropCoordsDisplay.y1_display * metrics.scaleY);
+					const intrinsicX2 = Math.round(this.cropCoordsDisplay.x2_display * metrics.scaleX);
+					const intrinsicY2 = Math.round(this.cropCoordsDisplay.y2_display * metrics.scaleY);
+
+					const newAnnotation = {
+						id: this.currentAnnotationId++,
+						videoName: this.videoName,
+						start: this.manualTimes.start,
+						end: this.manualTimes.end,
+						transcription: this.transcription,
+						cropTime: this.manualTimes.crop,
+						x1: intrinsicX1,
+						y1: intrinsicY1,
+						x2: intrinsicX2,
+						y2: intrinsicY2,
+					};
+					this.annotations.push(newAnnotation);
+					if (this.videoPlayer && newAnnotation.end !== null) {
+						this.videoPlayer.currentTime = newAnnotation.end;
+					}
+					this.resetCurrentAnnotation();
+					this.isCropping = false; // Exit cropping mode after saving
+				},
+				cancelCrop() {
+					this.isCropping = false;
+					this.isDraggingCrop = false;
+					this.cropStartCoordsDisplay = {x: 0, y: 0};
+					this.cropCoordsDisplay = {x1_display: 0, y1_display: 0, x2_display: 0, y2_display: 0};
+					this.cropCoordsInput = {x1: 0, y1: 0, x2: 0, y2: 0}; // Clear input fields too
+				},
+				resetCurrentAnnotation() {
+					// This function clears the annotation controls, but keeps video source
+					this.currentTime = 0.000;
+					this.transcription = '';
+					this.isSegmentMarkingActive = false; // Reset marking state
+					this.cancelCrop(); // Also resets cropping state
+					this.manualTimes = {start: null, end: null, crop: null};
+					this.videoPlayer.pause();
+					clearTimeout(this.playbackTimeout); // Clear any pending playback
+					this.playbackTimeout = null;
+				},
+				loadAnnotation(annotation) {
+					if (!this.videoPlayer || !this.videoSrc) {
+						alert('Please load a video first.');
+						return;
+					}
+					this.videoName = annotation.videoName;
+					this.currentTime = annotation.cropTime;
+					this.videoPlayer.currentTime = annotation.cropTime;
+					this.transcription = annotation.transcription;
+					this.manualTimes.start = annotation.start;
+					this.manualTimes.end = annotation.end;
+					this.manualTimes.crop = annotation.cropTime;
+
+					// Convert intrinsic video pixels back to display coordinates for loading
+					const metrics = this.videoDisplayMetrics;
+					this.cropCoordsDisplay.x1_display = Math.round(annotation.x1 / metrics.scaleX);
+					this.cropCoordsDisplay.y1_display = Math.round(annotation.y1 / metrics.scaleY);
+					this.cropCoordsDisplay.x2_display = Math.round(annotation.x2 / metrics.scaleX);
+					this.cropCoordsDisplay.y2_display = Math.round(annotation.y2 / metrics.scaleY);
+
+					this.isCropping = true; // Show crop overlay
+					this.videoPlayer.pause();
+				},
+				playManualSegment() {
+					if (!this.videoPlayer || !this.videoSrc || this.manualTimes.start === null || this.manualTimes.end === null) {
+						alert('Please set valid Start and End times for the segment.');
+						return;
+					}
+					this.videoPlayer.currentTime = this.manualTimes.start;
+					this.videoPlayer.play();
+
+					if (this.playbackTimeout) {
+						clearTimeout(this.playbackTimeout);
+					}
+					const duration = (this.manualTimes.end - this.manualTimes.start) * 1000;
+					this.playbackTimeout = setTimeout(() => {
+						this.videoPlayer.pause();
+						this.playbackTimeout = null;
+					}, duration);
+				},
+				deleteAnnotation(id) {
+					if (confirm('Are you sure you want to delete this annotation?')) {
+						this.annotations = this.annotations.filter(ann => ann.id !== id);
+					}
+				},
+				exportCsv() {
+					if (this.annotations.length === 0) {
+						alert('No annotations to export.');
+						return;
+					}
+
+					const headers = [
+						'ID', 'Video File Name', 'Start Time (s)', 'End Time (s)', 'Transcription',
+						'Crop Time (s)', 'Crop X1', 'Crop Y1', 'Crop X2', 'Crop Y2'
+					];
+					const rows = this.annotations.map(ann => [
+						ann.id,
+						`"${ann.videoName.replace(/"/g, '""')}"`, // Handle commas/quotes in file name
+						ann.start.toFixed(2),
+						ann.end.toFixed(2),
+						`"${ann.transcription.replace(/"/g, '""')}"`, // Handle commas/quotes in transcription
+						ann.cropTime.toFixed(2),
+						ann.x1, ann.y1, ann.x2, ann.y2
+					]);
+
+					let csvContent = headers.join(',') + '\n';
+					rows.forEach(row => {
+						csvContent += row.join(',') + '\n';
+					});
+
+					const blob = new Blob([csvContent], {type: 'text/csv;charset=utf-8;'});
+					const link = document.createElement('a');
+					link.href = URL.createObjectURL(blob);
+					link.setAttribute('download', `${this.videoName}_annotations.csv`);
+					document.body.appendChild(link);
+					link.click();
+					document.body.removeChild(link);
+					URL.revokeObjectURL(link.href); // Clean up
+				},
+				handleVideoMetadataLoaded() {
+					this.resetCurrentAnnotation();
+				},
+			}
+		});
+		app.mount('#app');
+	</script>
+</body>
+
+</html>
