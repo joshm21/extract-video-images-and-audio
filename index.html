@@ -160,7 +160,7 @@
 			<div id="controls-container"
 				class="flex flex-col gap-4 w-1/3 max-w-md p-4 bg-white rounded-lg shadow-md">
 				<div class="input-group">
-					<button @click="togglePlayPauseMark"
+					<button @click="togglePlayPauseMarkSave"
 						class="w-full py-2 text-white rounded-md bg-blue-600 hover:bg-blue-700 focus:ring-blue-500"
 						:disabled="!videoSrc">
 						{{ buttonText }}
@@ -202,10 +202,6 @@
 								class="w-full p-1 border border-gray-300 rounded-md focus:ring-blue-500 focus:border-blue-500">
 						</div>
 					</div>
-					<button @click="playManualSegment"
-						class="w-full py-2 bg-yellow-600 text-white rounded-md hover:bg-yellow-700 focus:outline-none focus:ring-2 focus:ring-yellow-500"
-						:disabled="!videoSrc || manualTimes.start === null || manualTimes.end === null">Play
-						Segment</button>
 				</div>
 
 				<div class="input-group p-4 bg-gray-100 rounded-lg shadow-inner">
@@ -233,14 +229,11 @@
 								class="w-full p-1 border border-gray-300 rounded-md focus:ring-blue-500 focus:border-blue-500">
 						</div>
 					</div>
-					<button @click="cancelCrop"
-						class="w-full py-2 bg-red-600 text-white rounded-md hover:bg-red-700 focus:outline-none focus:ring-2 focus:ring-red-500">Cancel
-						Crop</button>
 				</div>
 
-				<button @click="saveAnnotation"
-					class="w-full py-2 bg-blue-600 text-white rounded-md hover:bg-blue-700 focus:outline-none focus:ring-2 focus:ring-blue-500"
-					:disabled="!transcription || manualTimes.start === null || manualTimes.end === null || manualTimes.crop === null">Save
+				<button @click="resetCurrentAnnotation"
+					class="w-full py-2 bg-green-600 text-white rounded-md hover:bg-blue-700 focus:outline-none focus:ring-2 focus:ring-blue-500"
+					:disabled="!transcription || manualTimes.start === null || manualTimes.end === null || manualTimes.crop === null">Reset
 					Annotation</button>
 			</div>
 		</section>
@@ -361,15 +354,19 @@
 			computed: {
 				// Determines the text for the main Play/Mark button
 				buttonText() {
-					if (!this.isPlaying && !this.isSegmentMarkingActive) {
-						return 'Play';
-					} else if (this.isPlaying && !this.isSegmentMarkingActive) {
-						return 'Mark Start'; // Changed from white to indigo
-					} else if (this.isPlaying && this.isSegmentMarkingActive) {
-						return 'Mark End';
+					if (this.isPlaying) {
+						if (this.isSegmentMarkingActive) {
+							return 'Mark End';
+						} else {
+							return 'Mark Start';
+						}
+					} else { // not playing
+						if (this.isSegmentMarkingActive) {
+							return 'Resume Segment'
+						} else {
+							return 'Save and Play'
+						}
 					}
-					// Fallback for paused state after marking
-					return 'Play';
 				},
 				videoDisplayMetrics() {
 					// This computed property calculates the actual dimensions and offsets of the video
@@ -461,6 +458,13 @@
 					this.cropCoordsDisplay.x2_display = parseFloat(newVal.x2) || 0;
 					this.cropCoordsDisplay.y2_display = parseFloat(newVal.y2) || 0;
 				}, {deep: true});
+
+				// Add keyboard event listener
+				window.addEventListener('keydown', this.handleHotkeys);
+			},
+			beforeUnmount() {
+				// Remove keyboard event listener when component is unmounted
+				window.removeEventListener('keydown', this.handleHotkeys);
 			},
 			methods: {
 				handleVideoFileChange(event) {
@@ -476,6 +480,10 @@
 						this.videoPlayer.load(); // Reload video to ensure loadedmetadata fires again
 					}
 				},
+				handleVideoMetadataLoaded() {
+					this.videoPlayer.playbackRate = 0.5;
+					this.resetCurrentAnnotation();
+				},
 				updateCurrentTime() {
 					this.currentTime = this.videoPlayer.currentTime;
 
@@ -486,21 +494,23 @@
 						this.playbackTimeout = null;
 					}
 				},
+				handleHotkeys(event) {
+					if (!this.videoSrc) return; // Only enable hotkeys if a video is loaded
+					// Prevent hotkeys from triggering if user is typing in an input field
+					if (event.target.tagName === 'INPUT' || event.target.tagName === 'TEXTAREA') {
+						return;
+					}
+					if (event.shiftKey && event.key === 'P') {
+						event.preventDefault();
+						this.togglePlayPauseMarkSave();
+					}
+				},
 				// Unified Play/Mark button logic
-				togglePlayPauseMark() {
+				togglePlayPauseMarkSave() {
 					if (!this.videoPlayer || !this.videoSrc) return;
 
-					if (!this.isPlaying) {
-						// Currently paused, so Play
-						this.videoPlayer.play();
-					} else {
-						// Currently playing
-						if (!this.isSegmentMarkingActive) {
-							// Playing, not marked start yet, so Mark Start
-							this.manualTimes.start = parseFloat(this.currentTime.toFixed(2));
-							this.isSegmentMarkingActive = true;
-							this.videoPlayer.pause(); // Pause after marking start
-						} else {
+					if (this.isPlaying) {
+						if (this.isSegmentMarkingActive) {
 							// Playing, marked start, so Mark End
 							this.manualTimes.end = parseFloat(this.currentTime.toFixed(2));
 							this.isSegmentMarkingActive = false;
@@ -508,7 +518,18 @@
 							this.$nextTick(() => {
 								this.$refs.transcriptionInput.focus(); // Focus transcription input
 							});
+						} else {
+							// Playing, not marked start yet, so Mark Start
+							this.manualTimes.start = parseFloat(this.currentTime.toFixed(2));
+							this.isSegmentMarkingActive = true;
+							this.videoPlayer.pause(); // Pause after marking start
+
 						}
+					} else { // not playing
+						if (!this.isSegmentMarkingActive) {
+							this.saveAnnotation();
+						}
+						this.videoPlayer.play();
 					}
 				},
 				// New method to activate crop mode, called automatically after transcription blur
@@ -589,7 +610,7 @@
 				},
 				saveAnnotation() {
 					if (!this.transcription || !this.videoSrc || this.manualTimes.start === null || this.manualTimes.end === null || this.manualTimes.crop === null) {
-						alert('Please ensure transcription, start/end times, and crop timestamp are set.');
+						console.log('Please ensure transcription, start/end times, and crop timestamp are set.');
 						return;
 					}
 
@@ -715,9 +736,6 @@
 					link.click();
 					document.body.removeChild(link);
 					URL.revokeObjectURL(link.href); // Clean up
-				},
-				handleVideoMetadataLoaded() {
-					this.resetCurrentAnnotation();
 				},
 			}
 		});
