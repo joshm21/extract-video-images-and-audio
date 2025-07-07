@@ -2,6 +2,7 @@
 import csv
 import subprocess
 import os
+import sys # Import sys for sys.exit
 
 def extract_audio_clips(csv_path, videos_dir, output_audio_dir):
     """
@@ -49,7 +50,7 @@ def extract_audio_clips(csv_path, videos_dir, output_audio_dir):
             continue
 
         video_path = os.path.join(videos_dir, video_filename)
-        
+
         # Clean transcription for filename (remove special chars, limit length)
         clean_transcription = "".join([c for c in transcription if c.isalnum() or c.isspace()]).strip()
         clean_transcription = clean_transcription.replace(" ", "_")[:50] # Limit to 50 chars
@@ -58,6 +59,7 @@ def extract_audio_clips(csv_path, videos_dir, output_audio_dir):
         output_audio_path = os.path.join(output_audio_dir, output_audio_filename)
 
         duration = end_time - start_time
+
         if duration <= 0:
             print(f"Skipping annotation {word_id}: Invalid duration ({duration:.3f}s).")
             continue
@@ -66,29 +68,29 @@ def extract_audio_clips(csv_path, videos_dir, output_audio_dir):
             print(f"Warning: Video file not found for {video_filename} (ID: {word_id}). Skipping.")
             continue
 
-        # ffmpeg command: -ss (start time), -to (end time), -i (input), -vn (no video), -acodec (audio codec)
         command = [
             'ffmpeg',
-            '-ss', str(start_time),
-            '-i', video_path,
-            '-to', str(end_time), 
-            '-vn',
-            '-acodec', 'pcm_s16le', # Use a common uncompressed audio codec
-            '-ar', '44100',         # Sample rate
-            '-ac', '1',             # Mono audio
+            '-y',                     # Automatically overwrite output files
+            '-i', video_path,         # Input file FIRST
+            '-ss', str(start_time),   # Precise seek to start time (after -i)
+            '-to', str(end_time),     # Precise end time
+            '-vn',                    # No video output
+            '-q:a', '0',              # High quality audio encoding (MP3 specific)
+            '-map', '0:a:0',          # Map the first audio stream (or just 'a' for all audio)
             output_audio_path
         ]
 
         try:
             # Using stdout=subprocess.DEVNULL and stderr=subprocess.DEVNULL to suppress ffmpeg output
-            subprocess.run(command, check=True, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+            #subprocess.run(command, check=True, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+            subprocess.run(command, check=True)
             print(f"Extracted audio for ID {word_id} to {output_audio_path}")
         except subprocess.CalledProcessError as e:
             print(f"Error extracting audio for ID {word_id} from {video_filename}: {e}")
             # print(f"FFmpeg stderr: {e.stderr.decode()}") # Uncomment for detailed ffmpeg errors
         except FileNotFoundError:
             print("Error: ffmpeg command not found. Please ensure ffmpeg is installed and in your system's PATH.")
-            return
+            sys.exit(1) # Exit if ffmpeg is not found, as it's a critical dependency
 
     print("\nAudio extraction complete.")
 
