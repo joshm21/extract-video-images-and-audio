@@ -232,8 +232,7 @@
 				</div>
 
 				<button @click="resetCurrentAnnotation"
-					class="w-full py-2 bg-green-600 text-white rounded-md hover:bg-blue-700 focus:outline-none focus:ring-2 focus:ring-blue-500"
-					:disabled="!transcription || manualTimes.start === null || manualTimes.end === null || manualTimes.crop === null">Reset
+					class="w-full py-2 bg-green-600 text-white rounded-md hover:bg-green-700 focus:outline-none focus:ring-2 focus:ring-green-500">Reset
 					Annotation</button>
 			</div>
 		</section>
@@ -652,8 +651,8 @@
 					this.currentTime = 0.000;
 					this.transcription = '';
 					this.isSegmentMarkingActive = false; // Reset marking state
-					this.cancelCrop(); // Also resets cropping state
 					this.manualTimes = {start: null, end: null, crop: null};
+					this.cancelCrop(); // Also resets cropping state
 					this.videoPlayer.pause();
 					clearTimeout(this.playbackTimeout); // Clear any pending playback
 					this.playbackTimeout = null;
@@ -680,23 +679,6 @@
 
 					this.isCropping = true; // Show crop overlay
 					this.videoPlayer.pause();
-				},
-				playManualSegment() {
-					if (!this.videoPlayer || !this.videoSrc || this.manualTimes.start === null || this.manualTimes.end === null) {
-						alert('Please set valid Start and End times for the segment.');
-						return;
-					}
-					this.videoPlayer.currentTime = this.manualTimes.start;
-					this.videoPlayer.play();
-
-					if (this.playbackTimeout) {
-						clearTimeout(this.playbackTimeout);
-					}
-					const duration = (this.manualTimes.end - this.manualTimes.start) * 1000;
-					this.playbackTimeout = setTimeout(() => {
-						this.videoPlayer.pause();
-						this.playbackTimeout = null;
-					}, duration);
 				},
 				deleteAnnotation(id) {
 					if (confirm('Are you sure you want to delete this annotation?')) {
